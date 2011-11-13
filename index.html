@@ -1,0 +1,872 @@
+<html>
+    <head>
+        <script src="underscore-min.js" type="text/javascript"></script>
+        <script src="http://ajax.googleapis.com/ajax/libs/jquery/1.6.4/jquery.min.js" type="text/javascript"></script>
+        <script src="http://www.intermine.org/lib/imbedding/0.2/imbedding.js" type="text/javascript"></script>
+
+        <script type="text/javascript">
+
+            var currentPath = "";
+            var constraints = [];
+            var logic_ops = [];
+            var classMenu, tree, selectedItem, classes, currentRoot, summaryfields;
+            var $BASE_URL = "http://squirrel.flymine.org/intermine-test";
+            var OBJECT_OPS = {
+                "LOOKUP": "matches on some field",
+                "IN": "is in a list",
+                "NOT IN": "is not in a list"
+            };
+            var CODES = ("ABCDEFGHIJKLMNOPQRSTUVWXYZ").split("");
+            var ATTR_OPS = {
+                "=": "is",
+                "<": "sorts before",
+                ">": "sorts after",
+                "<=": "is less than or equal to",
+                ">=": "is greater than or equal to",
+            };
+            var NULL_OPS = {
+                "IS NULL": "does not exist",
+                "IS NOT NULL": "exists"
+            };
+            $.extend(ATTR_OPS, NULL_OPS);
+
+            $(function() {
+                IMBedding.setBaseUrl($BASE_URL);
+                $.getJSON($BASE_URL + "/service/model/json", function(res) {
+                    classes = res.model.classes;
+                    setUpQuery("Employee");
+                    setUpClassMenu();
+                });
+                $.getJSON($BASE_URL + "/service/summaryfields", function(res) {
+                    summaryfields = res.classes;
+                    displayTable();
+                });
+                $('#references-box h2').click(function() {$('#where-next').slideToggle();});
+                addViewAdder();
+                    
+            });
+
+            function setUpClassMenu() {
+                var i;
+
+                for (i in classes) {
+                    $('#class-selector').append($("<option>").text(classes[i].name).attr("selected", (classes[i].name == "Employee")));
+                }
+                $('#class-selector').selectToAutocomplete({'sort': true});
+                $('form').submit(function() {
+                    var cls = $('#class-selector').val();
+                    if (cls in classes) {
+                        setUpQuery(cls);
+                    }
+                    return false;
+                });
+                $('.selector').slideDown();
+            }
+
+            function setUpQuery(cls) {
+                $('#values ul').empty();
+                currentRoot = cls;
+                $('label[for="new-view"]').text(cls);
+                currentPath = cls;
+                constraints = [];
+                renderConstraints();
+                logic_ops = [];
+            }
+
+            function addViewAdder() {
+                var $input = $('#new-view');
+                $input.autocomplete({
+                    source: getViewSuggestions,
+                    select: function(event, ui) {
+                        var item = ui.item;
+                        paths.push(currentRoot + "." + item.value);
+                        displayTable();
+                    }
+                });
+            }
+
+            function getViewSuggestions(obj, cb) {
+                var input = obj.term;
+                var possibilities = getPossibilites(input);
+                cb(possibilities);
+            }
+
+            function getPossibilites(term) {
+                return _(getAll(5)).chain()
+                                   .filter(function(x) {return x.indexOf(term) >= 0})
+                                   .sortBy(function(x) {return x.lastIndexOf(".")})
+                                   .map(function(x) {return x.substring(x.indexOf(".") + 1);})
+                                   .value();
+            }
+            
+            var _possibilities_cache = {};
+            function getAll(depth, path) {
+                if (depth < 1) {
+                    return [];
+                }
+                path = path || currentRoot;
+                var key = path + depth;
+                var cd;
+                if (key in _possibilities_cache) {
+                    return _possibilities_cache[key];
+                } else {
+                    cd = getClassOf(path);
+                    var ret = _(cd.attributes)
+                        .map(function(x) {return path + "." + x.name})
+                        .concat(_($.extend({}, cd.references || {}, cd.collections || {})).chain()
+                                .map(function(x) {return getAll(depth - 1, path + "." + x.name)})
+                                .flatten()
+                                .value());
+                    _possibilities_cache[key] = ret;
+                    return ret;
+                }
+            }
+
+            var _path_to_cd = {};
+            function getClassOf(path) {
+                if (path in _path_to_cd) {
+                    return _path_to_cd[path];
+                }
+
+                var parts = path.split(/\./);
+                var cd = classes[parts.shift()];
+                while (parts.length) {
+                    var fields = $.extend({}, cd.attributes, cd.references, cd.collections);
+                    var field_name = parts.shift();
+                    var fld = fields[field_name];
+                    if (fld && "referencedType" in fld) {
+                        cd = classes[fld.referencedType];
+                    }
+                }
+                _path_to_cd[path] = cd;
+                return cd;
+            }
+
+            function showWhereNext() {
+                var $whereNext = $('#where-next').empty();
+                var cd = getClassOf(currentPath);
+                _($.extend({}, cd.references, cd.collections)).each(function(fd) {
+                    console.log(fd.name);
+                    $('<li>').text(fd.referencedType + "s")
+                            .click(function() {currentPath += "." + fd.name; displayTable()})
+                            .appendTo($whereNext);
+                });
+            }
+
+            function addConstraintCreator() {
+                var item = selectedItem;
+                var $conBox = $('<div>');
+                var $pathSpan = $('<span class="con-path">').text(item.name).appendTo($conBox);
+                var $select = $('<select>').appendTo($conBox);
+                var i, $button, $valBox, $extraValBox;
+                if ("fields" in item) {
+                    for (i in OBJECT_OPS) {
+                        $select.append($('<option>').attr("value", i).text(OBJECT_OPS[i]));
+                    }
+                } else {
+                    for (i in ATTR_OPS) {
+                        $select.append($('<option>').attr("value", i).text(ATTR_OPS[i]));
+                    }
+                }
+                $select.change(function() {
+                    var selectedOp = $select.val();
+                    if (selectedOp in NULL_OPS) {
+                        $valBox.attr("disabled", true);
+                        $button.attr("disabled", false);
+                    } else {
+                        $valBox.attr("disabled", false);
+                        $button.attr("disabled", !$valBox.val());
+                    }
+                    if (selectedOp == "LOOKUP") {
+                        $extraValBox.show();
+                    } else {
+                        $extraValBox.hide();
+                    }
+                });
+
+                $valBox = $('<input type="text">').appendTo($conBox).change(function() {$button.attr("disabled", !$(this).val())});
+                $extraValBox = $('<input type="text" style="display: none;">').appendTo($conBox);
+                $button = $('<button disabled>').text("Add").click(function() {
+                    var conpath = item.id;
+                    var op = $select.val();
+                    var value = $valBox.val();
+                    var extraValue = $extraValBox.val();
+                    var newConstraint = {path: conpath, op: op};
+                    if (!(op in NULL_OPS)) {
+                        if (value) {
+                            newConstraint.value = value;
+                        }
+                        if (extraValue) {
+                            newConstraint.extraValue = extraValue;
+                        }
+                    }
+                    constraints.push(newConstraint);
+                    $conBox.remove();
+                    displayTable();
+                }).appendTo($conBox);
+                $conBox.append($('<button>').text("cancel").click(function() {$conBox.remove()}));
+                $conBox.appendTo($('#constraints'));
+            }
+
+            function makeRemovalButton(path) {
+                var $button = $('<button>').text("Remove");
+                $button.click(function() {
+                    $('.' + path.replace(/\./g, "-")).removeClass("in-view");
+                    paths.splice(paths.indexOf(path), 1);
+                    displayTable();
+                });
+                return $button;
+            }
+
+            function renderConstraints() {
+                $('#constraint-list').empty();
+                var i;
+                if (constraints.length < 1) {
+                    $('#constraint-list').append($('<span>').text("No Constraints").addClass("unconstrained"));
+                }
+                $('#con-count').text(constraints.length);
+                if (constraints.length == 1) {
+                    $('#constraint-box h2 .pl-suffix').hide();
+                } else {
+                    $('#constraint-box h2 .pl-suffix').show();
+                }
+                for (i in constraints) {
+                    if (i > 0) {
+                        var $logicOp = $('<li>').text(logic_ops[i] || "AND").appendTo('#constraint-list');
+                        $logicOp.click((function(idx) { return function() {
+                            var currentOp = $logicOp.text();
+                            if (currentOp == "AND") {
+                                logic_ops[idx] = "OR";
+                            } else {
+                                logic_ops[idx] = "AND";
+                            }
+                            displayTable();
+                        }})(i));
+                    }
+                    var con = constraints[i];
+                    var $conBox = $('<li class="constraint">');
+                    $conBox.append($('<span class="path">').text(con.path));
+                    $conBox.append($('<span class="op">').text(con.op));
+                    if (con.value) {
+                        $conBox.append($('<span class="value">').text(con.value));
+                    }
+                    if (con.extraValue) {
+                        $conBox.append($('<span class="extra-value">').text(con.extraValue));
+                    }
+
+                    $conBox.append($('<button>').text("remove").click((function(idx) {return function() {
+                        constraints.splice(idx, 1);
+                        displayTable();
+                    }})(i)));
+                    $('#constraint-list').append($conBox);
+                }
+            }
+
+            function showCount(query) {
+                IMBedding.loadQuery(query, {format: "jsoncount"}, function(resultSet) {
+                    $('#row-count').text(resultSet.count);
+                });
+            }
+
+            function showBreadCrumbs() {
+                $('#breadcrumbs').empty();
+                var parts = currentPath.split(/\./);
+                _(parts).each(function(part, idx) {
+                    var $button = $('<button>').text(part);
+                    $button.click(function() {
+                        currentPath = parts.slice(0, idx + 1).join(".");
+                        displayTable();
+                    });
+                    $button.appendTo('#breadcrumbs');
+                });
+            }
+
+            function displayTable() {
+                showBreadCrumbs();
+                var $table = $('#values ul').empty();
+                var cd = getClassOf(currentPath);
+                var paths;
+                if (cd.name in summaryfields) {
+                    paths = _(summaryfields[cd.name]).map(function(p) {return currentPath + p.substring(p.indexOf("."))});
+                } else {
+                    paths = _(cd.attributes).map(function(f) { return currentPath + "." + f.name});
+                }
+                if (paths.length < 1) {
+                    $('#values').slideUp();
+                    renderConstraints();
+                    return;
+                }
+                var conLogic, i;
+                if (logic_ops.length > 0) {
+                    conLogic = "";
+                    for (i in constraints) {
+                        if (i > 0) {
+                            conLogic += " " + (logic_ops[i] || "AND") + " ";
+                        }
+                        conLogic += CODES[i];
+                    }
+                }
+                renderConstraints();
+                var query = {select: paths, from: "testmodel", where: constraints};
+                if (conLogic) {
+                    query.constraintLogic = conLogic;
+                }
+                showCount(query);
+                IMBedding.loadQuery(query, {format: "jsonrows", size: 10}, function(resultSet) {
+                    _(resultSet.results).each(function(row) {
+                        var $li = $('<li class="result-row">');
+                        _(row).each(function(cell, idx) {
+                            $li.append(
+                                $("<span>").append(
+                                    $('<a>').text(cell.value).attr("href", $BASE_URL + cell.url).attr("title", resultSet.columnHeaders[idx])
+                                )
+                            );
+                        });
+                        $li.appendTo('#values ul');
+                    });
+                    $('#values').slideDown();
+                });
+                showWhereNext();
+            }
+
+            
+        </script>
+    </head>
+
+    <body class="nihilo">
+        <div id="container">
+            <div id="header"><h1>Demo Query Builder</h1></div>
+            <div id="content">
+                <div class="selector" style="display: none;">
+                    <form>
+                        <h2 class="stamp">Root Class</h2>
+                        <label class="label" for="class-selector">Choose:</label>
+                        <select id="class-selector"></select>
+                    </form>
+                </div>
+                <div id="references-box">
+                    <h2>Where Next?</h2>
+                    <ul id="where-next" style="display: none;">
+                    </ul>
+                </div>
+                <!--
+                <div id="views" class="selector">
+                    <form>
+                        <h2 class="stamp">Add View</h2>
+                        <label for="new-view" class="label"></label>
+                        <input type="text" id="new-view"></input>
+                    </form>
+                </div>
+                -->
+                <div id="values" style="display: none;">
+                    <div id="breadcrumbs"></div>
+                    <h2><span id="row-count"></span> Rows. (First 10)</h2>
+                    <ul></ul>
+                </div>
+            </div>
+        </div>
+    </body>
+
+    <style type="text/css">
+        html {
+           background-color: #ebebeb;
+           font-family: Arial,"Lucida Grande",Verdana,Sans-serif; 
+        }
+
+
+        #constraint-box, #references-box {
+            border: 1px solid #ebebeb;
+            border-radius: 5px 0px 0px 5px;
+        }
+
+        h1 {
+            font-family: "Palatino Linotype",Palatino,"Hoefler Text","Baskerville old face",Georgia,Garamond,"Times New Roman",serif;
+        }
+
+        #header h1 {
+            font-size: 32px;
+            margin-bottom: 0.2em;
+            padding-left: 5%;
+        }
+
+        .stamp {
+            color: #BBBBBB;
+            margin-top: 0;
+            position: absolute;
+            right: 15px;
+            text-transform: uppercase;
+            top: 12px;
+        }
+
+        .unconstrained {
+            color: #BBBBBB;
+            text-transform: uppercase;
+        }
+
+        .selector {
+            background-color: #eeeeee;
+            border: 1px solid #DDDDDD;
+            border-radius: 5px 5px 5px 5px;
+            margin: 0 20px 2em 20px;
+            padding: 10px 90 9px 90px;
+            position: relative;
+        }
+
+       .label {
+           color: #444444;
+           left: 15px;
+           position: absolute;
+           text-shadow: 0 1px #F7F7F7;
+           top: 15px;
+       }
+
+       .selector input, #views input {
+           -moz-border-bottom-colors: none;
+           -moz-border-image: none;
+           -moz-border-left-colors: none;
+           -moz-border-right-colors: none;
+           -moz-border-top-colors: none;
+           -moz-font-feature-settings: inherit;
+           -moz-font-language-override: inherit;
+           border-color: #ABABAB #C9C9C9 #C9C9C9;
+           border-radius: 1px 1px 1px 1px;
+           border-right: 1px solid #C9C9C9;
+           border-style: solid;
+           border-width: 1px;
+           box-shadow: 0 1px 1px 0 rgba(0, 0, 0, 0.15) inset;
+           font-family: inherit;
+           font-size: 1.2em;
+           font-size-adjust: inherit;
+           font-stretch: inherit;
+           font-style: inherit;
+           font-variant: inherit;
+           font-weight: inherit;
+           line-height: inherit;
+           margin: 0;
+           outline: medium none;
+           padding: 4px 2px 2px 6px;
+           width: 80%;
+       }
+
+    .ui-autocomplete {
+        background-color: #FFFFFF;
+        border: 1px solid #BBBBBB;
+        box-shadow: 1px 1px 5px rgba(0, 0, 0, 0.3);
+        list-style: none outside none;
+        margin: 0;
+        max-height: 247px;
+        overflow-y: scroll;
+        padding: 0;
+        width: 218px;
+    }
+    .ui-autocomplete .ui-menu-item {
+        margin: 0;
+        padding: 0;
+    }
+    .ui-autocomplete .ui-menu-item a {
+        border-top: 1px solid #CCCCCC;
+        color: #393939;
+        cursor: pointer;
+        display: block;
+        font-size: 1.15em;
+        margin: 0;
+        padding: 3px 7px;
+    }
+    .ui-autocomplete .ui-menu-item:first-child a {
+        border-top: medium none;
+    }
+    .ui-autocomplete .ui-menu-item a.ui-state-hover {
+        background-color: #EEEEEE;
+        color: #222222;
+        text-shadow: 0 1px #FFFFFF;
+    }
+
+        #class-menu {
+            float: right;
+        }
+
+        .in-view {
+            background-color: #D2E3F3;
+            border: 1px solid #eee;
+            border-radius: 2px 2px 2px 2px;
+            box-shadow: 1px 1px 3px rgba(0, 0, 0, 0.3);
+        }
+        .selector input:focus {
+            border-color: #63A3F1;
+            border-radius: 2px 2px 2px 2px;
+            border-width: 2px;
+            box-shadow: none;
+            padding: 3px 1px 1px 5px;
+        }
+
+        #treeContainer {
+            overflow: visible;
+        }
+
+        li {
+            margin: 0.4em 0.1em 0.4em 0.1em;
+        }
+        #constraint-box, #references-box {
+            box-shadow: -1px 2px 2px rgba(0, 0, 0, 0.3);
+            padding: 0.5em;
+            position: absolute;
+            right: 0;
+            background-color: #ffffff;
+            border-top: 1px solid rgba(0, 0, 0, 0.2);
+        }
+
+        #constraint-box h2, #references-box h2  {
+            font-size: 18px;
+        }
+        #constraint-box li {
+            list-style-type: none;
+            font-family: monospace;
+        }
+
+        li.result-row {
+            border-top: 1px solid #aaa;
+            padding-top: 1em;
+            padding-bottom: 0.8em;
+            list-style-type: none;
+        }
+
+        #constraint-box li button {
+            margin-left: 0.5em;
+            float: right;
+        }
+
+        li span {
+            padding: 0.1em 0.2em 0.1em 0.2em;
+            margin: 0.1em;
+            box-shadow: 1px 1px 3px rgba(0, 0, 0, 0.3);
+            border: 1px solid #eee;
+            border-radius: 2px 2px 2px 2px;
+        }
+        #header {
+            background-color: #D2E3F3;
+            border-bottom: 1px solid #B3C0D0;
+            border-radius: 0 0 0 0;
+            margin-bottom: 0;
+            padding-left: 5px;
+            position: relative;
+            z-index: 1;
+        }
+    
+        body {
+            padding: 0;
+            margin: 0;
+        }
+
+        #content {
+            position: relative;
+            padding: 1em;
+        }
+
+        #container {
+            margin-left: auto;
+            margin-right: auto;
+            max-width: 700px;
+            background-color: #FFFFFF;
+            border-radius: 0 0 4px 4px;
+            box-shadow: 1px 2px 5px #AAAAAA;
+        }
+        #values table {
+            border-collapse: collapse;
+            border: 1px solid #aaa;
+        }
+        #values table td, #values table th {
+            padding: 0.1em 0.2em 0.1em 0.2em;
+            margin: 0.1em;
+            border: 1px solid #aaa;
+        }
+        #values table th {
+            padding: 0.2em;
+            background: #D2E3F3;
+        }
+        #values table th button {
+            margin-left: 0.2em;
+        }
+        #values tr:nth-child(odd)    { background-color:#eee; }
+        #values tr:nth-child(even)    { background-color:#fff; }
+    </style>
+    <script type="text/javascript">
+        /*!
+         * jQuery UI 1.8.16
+         *
+         * Copyright 2011, AUTHORS.txt (http://jqueryui.com/about)
+         * Dual licensed under the MIT or GPL Version 2 licenses.
+         * http://jquery.org/license
+         *
+         * http://docs.jquery.com/UI
+         */
+    (function(c,j){function k(a,b){var d=a.nodeName.toLowerCase();if("area"===d){b=a.parentNode;d=b.name;if(!a.href||!d||b.nodeName.toLowerCase()!=="map")return false;a=c("img[usemap=#"+d+"]")[0];return!!a&&l(a)}return(/input|select|textarea|button|object/.test(d)?!a.disabled:"a"==d?a.href||b:b)&&l(a)}function l(a){return!c(a).parents().andSelf().filter(function(){return c.curCSS(this,"visibility")==="hidden"||c.expr.filters.hidden(this)}).length}c.ui=c.ui||{};if(!c.ui.version){c.extend(c.ui,{version:"1.8.16",
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            keyCode:{ALT:18,BACKSPACE:8,CAPS_LOCK:20,COMMA:188,COMMAND:91,COMMAND_LEFT:91,COMMAND_RIGHT:93,CONTROL:17,DELETE:46,DOWN:40,END:35,ENTER:13,ESCAPE:27,HOME:36,INSERT:45,LEFT:37,MENU:93,NUMPAD_ADD:107,NUMPAD_DECIMAL:110,NUMPAD_DIVIDE:111,NUMPAD_ENTER:108,NUMPAD_MULTIPLY:106,NUMPAD_SUBTRACT:109,PAGE_DOWN:34,PAGE_UP:33,PERIOD:190,RIGHT:39,SHIFT:16,SPACE:32,TAB:9,UP:38,WINDOWS:91}});c.fn.extend({propAttr:c.fn.prop||c.fn.attr,_focus:c.fn.focus,focus:function(a,b){return typeof a==="number"?this.each(function(){var d=
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    this;setTimeout(function(){c(d).focus();b&&b.call(d)},a)}):this._focus.apply(this,arguments)},scrollParent:function(){var a;a=c.browser.msie&&/(static|relative)/.test(this.css("position"))||/absolute/.test(this.css("position"))?this.parents().filter(function(){return/(relative|absolute|fixed)/.test(c.curCSS(this,"position",1))&&/(auto|scroll)/.test(c.curCSS(this,"overflow",1)+c.curCSS(this,"overflow-y",1)+c.curCSS(this,"overflow-x",1))}).eq(0):this.parents().filter(function(){return/(auto|scroll)/.test(c.curCSS(this,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            "overflow",1)+c.curCSS(this,"overflow-y",1)+c.curCSS(this,"overflow-x",1))}).eq(0);return/fixed/.test(this.css("position"))||!a.length?c(document):a},zIndex:function(a){if(a!==j)return this.css("zIndex",a);if(this.length){a=c(this[0]);for(var b;a.length&&a[0]!==document;){b=a.css("position");if(b==="absolute"||b==="relative"||b==="fixed"){b=parseInt(a.css("zIndex"),10);if(!isNaN(b)&&b!==0)return b}a=a.parent()}}return 0},disableSelection:function(){return this.bind((c.support.selectstart?"selectstart":
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            "mousedown")+".ui-disableSelection",function(a){a.preventDefault()})},enableSelection:function(){return this.unbind(".ui-disableSelection")}});c.each(["Width","Height"],function(a,b){function d(f,g,m,n){c.each(e,function(){g-=parseFloat(c.curCSS(f,"padding"+this,true))||0;if(m)g-=parseFloat(c.curCSS(f,"border"+this+"Width",true))||0;if(n)g-=parseFloat(c.curCSS(f,"margin"+this,true))||0});return g}var e=b==="Width"?["Left","Right"]:["Top","Bottom"],h=b.toLowerCase(),i={innerWidth:c.fn.innerWidth,innerHeight:c.fn.innerHeight,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        outerWidth:c.fn.outerWidth,outerHeight:c.fn.outerHeight};c.fn["inner"+b]=function(f){if(f===j)return i["inner"+b].call(this);return this.each(function(){c(this).css(h,d(this,f)+"px")})};c.fn["outer"+b]=function(f,g){if(typeof f!=="number")return i["outer"+b].call(this,f);return this.each(function(){c(this).css(h,d(this,f,true,g)+"px")})}});c.extend(c.expr[":"],{data:function(a,b,d){return!!c.data(a,d[3])},focusable:function(a){return k(a,!isNaN(c.attr(a,"tabindex")))},tabbable:function(a){var b=c.attr(a,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            "tabindex"),d=isNaN(b);return(d||b>=0)&&k(a,!d)}});c(function(){var a=document.body,b=a.appendChild(b=document.createElement("div"));c.extend(b.style,{minHeight:"100px",height:"auto",padding:0,borderWidth:0});c.support.minHeight=b.offsetHeight===100;c.support.selectstart="onselectstart"in b;a.removeChild(b).style.display="none"});c.extend(c.ui,{plugin:{add:function(a,b,d){a=c.ui[a].prototype;for(var e in d){a.plugins[e]=a.plugins[e]||[];a.plugins[e].push([b,d[e]])}},call:function(a,b,d){if((b=a.plugins[b])&&
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                a.element[0].parentNode)for(var e=0;e<b.length;e++)a.options[b[e][0]]&&b[e][1].apply(a.element,d)}},contains:function(a,b){return document.compareDocumentPosition?a.compareDocumentPosition(b)&16:a!==b&&a.contains(b)},hasScroll:function(a,b){if(c(a).css("overflow")==="hidden")return false;b=b&&b==="left"?"scrollLeft":"scrollTop";var d=false;if(a[b]>0)return true;a[b]=1;d=a[b]>0;a[b]=0;return d},isOverAxis:function(a,b,d){return a>b&&a<b+d},isOver:function(a,b,d,e,h,i){return c.ui.isOverAxis(a,d,h)&&
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            c.ui.isOverAxis(b,e,i)}})}})(jQuery);
+    ;/*!
+      * jQuery UI Widget 1.8.16
+      *
+      * Copyright 2011, AUTHORS.txt (http://jqueryui.com/about)
+      * Dual licensed under the MIT or GPL Version 2 licenses.
+      * http://jquery.org/license
+      *
+      * http://docs.jquery.com/UI/Widget
+      */
+    (function(b,j){if(b.cleanData){var k=b.cleanData;b.cleanData=function(a){for(var c=0,d;(d=a[c])!=null;c++)try{b(d).triggerHandler("remove")}catch(e){}k(a)}}else{var l=b.fn.remove;b.fn.remove=function(a,c){return this.each(function(){if(!c)if(!a||b.filter(a,[this]).length)b("*",this).add([this]).each(function(){try{b(this).triggerHandler("remove")}catch(d){}});return l.call(b(this),a,c)})}}b.widget=function(a,c,d){var e=a.split(".")[0],f;a=a.split(".")[1];f=e+"-"+a;if(!d){d=c;c=b.Widget}b.expr[":"][f]=
+     function(h){return!!b.data(h,a)};b[e]=b[e]||{};b[e][a]=function(h,g){arguments.length&&this._createWidget(h,g)};c=new c;c.options=b.extend(true,{},c.options);b[e][a].prototype=b.extend(true,c,{namespace:e,widgetName:a,widgetEventPrefix:b[e][a].prototype.widgetEventPrefix||a,widgetBaseClass:f},d);b.widget.bridge(a,b[e][a])};b.widget.bridge=function(a,c){b.fn[a]=function(d){var e=typeof d==="string",f=Array.prototype.slice.call(arguments,1),h=this;d=!e&&f.length?b.extend.apply(null,[true,d].concat(f)):
+     d;if(e&&d.charAt(0)==="_")return h;e?this.each(function(){var g=b.data(this,a),i=g&&b.isFunction(g[d])?g[d].apply(g,f):g;if(i!==g&&i!==j){h=i;return false}}):this.each(function(){var g=b.data(this,a);g?g.option(d||{})._init():b.data(this,a,new c(d,this))});return h}};b.Widget=function(a,c){arguments.length&&this._createWidget(a,c)};b.Widget.prototype={widgetName:"widget",widgetEventPrefix:"",options:{disabled:false},_createWidget:function(a,c){b.data(c,this.widgetName,this);this.element=b(c);this.options=
+     b.extend(true,{},this.options,this._getCreateOptions(),a);var d=this;this.element.bind("remove."+this.widgetName,function(){d.destroy()});this._create();this._trigger("create");this._init()},_getCreateOptions:function(){return b.metadata&&b.metadata.get(this.element[0])[this.widgetName]},_create:function(){},_init:function(){},destroy:function(){this.element.unbind("."+this.widgetName).removeData(this.widgetName);this.widget().unbind("."+this.widgetName).removeAttr("aria-disabled").removeClass(this.widgetBaseClass+
+         "-disabled ui-state-disabled")},widget:function(){return this.element},option:function(a,c){var d=a;if(arguments.length===0)return b.extend({},this.options);if(typeof a==="string"){if(c===j)return this.options[a];d={};d[a]=c}this._setOptions(d);return this},_setOptions:function(a){var c=this;b.each(a,function(d,e){c._setOption(d,e)});return this},_setOption:function(a,c){this.options[a]=c;if(a==="disabled")this.widget()[c?"addClass":"removeClass"](this.widgetBaseClass+"-disabled ui-state-disabled").attr("aria-disabled",
+             c);return this},enable:function(){return this._setOption("disabled",false)},disable:function(){return this._setOption("disabled",true)},_trigger:function(a,c,d){var e=this.options[a];c=b.Event(c);c.type=(a===this.widgetEventPrefix?a:this.widgetEventPrefix+a).toLowerCase();d=d||{};if(c.originalEvent){a=b.event.props.length;for(var f;a;){f=b.event.props[--a];c[f]=c.originalEvent[f]}}this.element.trigger(c,d);return!(b.isFunction(e)&&e.call(this.element[0],c,d)===false||c.isDefaultPrevented())}}})(jQuery);
+;/*
+  * jQuery UI Position 1.8.16
+  *
+  * Copyright 2011, AUTHORS.txt (http://jqueryui.com/about)
+  * Dual licensed under the MIT or GPL Version 2 licenses.
+  * http://jquery.org/license
+  *
+  * http://docs.jquery.com/UI/Position
+  */
+(function(c){c.ui=c.ui||{};var n=/left|center|right/,o=/top|center|bottom/,t=c.fn.position,u=c.fn.offset;c.fn.position=function(b){if(!b||!b.of)return t.apply(this,arguments);b=c.extend({},b);var a=c(b.of),d=a[0],g=(b.collision||"flip").split(" "),e=b.offset?b.offset.split(" "):[0,0],h,k,j;if(d.nodeType===9){h=a.width();k=a.height();j={top:0,left:0}}else if(d.setTimeout){h=a.width();k=a.height();j={top:a.scrollTop(),left:a.scrollLeft()}}else if(d.preventDefault){b.at="left top";h=k=0;j={top:b.of.pageY,
+ left:b.of.pageX}}else{h=a.outerWidth();k=a.outerHeight();j=a.offset()}c.each(["my","at"],function(){var f=(b[this]||"").split(" ");if(f.length===1)f=n.test(f[0])?f.concat(["center"]):o.test(f[0])?["center"].concat(f):["center","center"];f[0]=n.test(f[0])?f[0]:"center";f[1]=o.test(f[1])?f[1]:"center";b[this]=f});if(g.length===1)g[1]=g[0];e[0]=parseInt(e[0],10)||0;if(e.length===1)e[1]=e[0];e[1]=parseInt(e[1],10)||0;if(b.at[0]==="right")j.left+=h;else if(b.at[0]==="center")j.left+=h/2;if(b.at[1]==="bottom")j.top+=
+ k;else if(b.at[1]==="center")j.top+=k/2;j.left+=e[0];j.top+=e[1];return this.each(function(){var f=c(this),l=f.outerWidth(),m=f.outerHeight(),p=parseInt(c.curCSS(this,"marginLeft",true))||0,q=parseInt(c.curCSS(this,"marginTop",true))||0,v=l+p+(parseInt(c.curCSS(this,"marginRight",true))||0),w=m+q+(parseInt(c.curCSS(this,"marginBottom",true))||0),i=c.extend({},j),r;if(b.my[0]==="right")i.left-=l;else if(b.my[0]==="center")i.left-=l/2;if(b.my[1]==="bottom")i.top-=m;else if(b.my[1]==="center")i.top-=
+     m/2;i.left=Math.round(i.left);i.top=Math.round(i.top);r={left:i.left-p,top:i.top-q};c.each(["left","top"],function(s,x){c.ui.position[g[s]]&&c.ui.position[g[s]][x](i,{targetWidth:h,targetHeight:k,elemWidth:l,elemHeight:m,collisionPosition:r,collisionWidth:v,collisionHeight:w,offset:e,my:b.my,at:b.at})});c.fn.bgiframe&&f.bgiframe();f.offset(c.extend(i,{using:b.using}))})};c.ui.position={fit:{left:function(b,a){var d=c(window);d=a.collisionPosition.left+a.collisionWidth-d.width()-d.scrollLeft();b.left=
+ d>0?b.left-d:Math.max(b.left-a.collisionPosition.left,b.left)},top:function(b,a){var d=c(window);d=a.collisionPosition.top+a.collisionHeight-d.height()-d.scrollTop();b.top=d>0?b.top-d:Math.max(b.top-a.collisionPosition.top,b.top)}},flip:{left:function(b,a){if(a.at[0]!=="center"){var d=c(window);d=a.collisionPosition.left+a.collisionWidth-d.width()-d.scrollLeft();var g=a.my[0]==="left"?-a.elemWidth:a.my[0]==="right"?a.elemWidth:0,e=a.at[0]==="left"?a.targetWidth:-a.targetWidth,h=-2*a.offset[0];b.left+=
+ a.collisionPosition.left<0?g+e+h:d>0?g+e+h:0}},top:function(b,a){if(a.at[1]!=="center"){var d=c(window);d=a.collisionPosition.top+a.collisionHeight-d.height()-d.scrollTop();var g=a.my[1]==="top"?-a.elemHeight:a.my[1]==="bottom"?a.elemHeight:0,e=a.at[1]==="top"?a.targetHeight:-a.targetHeight,h=-2*a.offset[1];b.top+=a.collisionPosition.top<0?g+e+h:d>0?g+e+h:0}}}};if(!c.offset.setOffset){c.offset.setOffset=function(b,a){if(/static/.test(c.curCSS(b,"position")))b.style.position="relative";var d=c(b),
+ g=d.offset(),e=parseInt(c.curCSS(b,"top",true),10)||0,h=parseInt(c.curCSS(b,"left",true),10)||0;g={top:a.top-g.top+e,left:a.left-g.left+h};"using"in a?a.using.call(b,g):d.css(g)};c.fn.offset=function(b){var a=this[0];if(!a||!a.ownerDocument)return null;if(b)return this.each(function(){c.offset.setOffset(this,b)});return u.call(this)}}})(jQuery);
+;/*
+  * jQuery UI Autocomplete 1.8.16
+  *
+  * Copyright 2011, AUTHORS.txt (http://jqueryui.com/about)
+  * Dual licensed under the MIT or GPL Version 2 licenses.
+  * http://jquery.org/license
+  *
+  * http://docs.jquery.com/UI/Autocomplete
+  *
+  * Depends:
+  * jquery.ui.core.js
+  * jquery.ui.widget.js
+  * jquery.ui.position.js
+  */
+(function(d){var e=0;d.widget("ui.autocomplete",{options:{appendTo:"body",autoFocus:false,delay:300,minLength:1,position:{my:"left top",at:"left bottom",collision:"none"},source:null},pending:0,_create:function(){var a=this,b=this.element[0].ownerDocument,g;this.element.addClass("ui-autocomplete-input").attr("autocomplete","off").attr({role:"textbox","aria-autocomplete":"list","aria-haspopup":"true"}).bind("keydown.autocomplete",function(c){if(!(a.options.disabled||a.element.propAttr("readOnly"))){g=
+                                                                                                                                                                                                                                                                                                                                                                                                                          false;var f=d.ui.keyCode;switch(c.keyCode){case f.PAGE_UP:a._move("previousPage",c);break;case f.PAGE_DOWN:a._move("nextPage",c);break;case f.UP:a._move("previous",c);c.preventDefault();break;case f.DOWN:a._move("next",c);c.preventDefault();break;case f.ENTER:case f.NUMPAD_ENTER:if(a.menu.active){g=true;c.preventDefault()}case f.TAB:if(!a.menu.active)return;a.menu.select(c);break;case f.ESCAPE:a.element.val(a.term);a.close(c);break;default:clearTimeout(a.searching);a.searching=setTimeout(function(){if(a.term!=
+                                                                                                                                                                                                                                                                                                                                                                                                                                  a.element.val()){a.selectedItem=null;a.search(null,c)}},a.options.delay);break}}}).bind("keypress.autocomplete",function(c){if(g){g=false;c.preventDefault()}}).bind("focus.autocomplete",function(){if(!a.options.disabled){a.selectedItem=null;a.previous=a.element.val()}}).bind("blur.autocomplete",function(c){if(!a.options.disabled){clearTimeout(a.searching);a.closing=setTimeout(function(){a.close(c);a._change(c)},150)}});this._initSource();this.response=function(){return a._response.apply(a,arguments)};
+                              this.menu=d("<ul></ul>").addClass("ui-autocomplete").appendTo(d(this.options.appendTo||"body",b)[0]).mousedown(function(c){var f=a.menu.element[0];d(c.target).closest(".ui-menu-item").length||setTimeout(function(){d(document).one("mousedown",function(h){h.target!==a.element[0]&&h.target!==f&&!d.ui.contains(f,h.target)&&a.close()})},1);setTimeout(function(){clearTimeout(a.closing)},13)}).menu({focus:function(c,f){f=f.item.data("item.autocomplete");false!==a._trigger("focus",c,{item:f})&&/^key/.test(c.originalEvent.type)&&
+                                  a.element.val(f.value)},selected:function(c,f){var h=f.item.data("item.autocomplete"),i=a.previous;if(a.element[0]!==b.activeElement){a.element.focus();a.previous=i;setTimeout(function(){a.previous=i;a.selectedItem=h},1)}false!==a._trigger("select",c,{item:h})&&a.element.val(h.value);a.term=a.element.val();a.close(c);a.selectedItem=h},blur:function(){a.menu.element.is(":visible")&&a.element.val()!==a.term&&a.element.val(a.term)}}).zIndex(this.element.zIndex()+1).css({top:0,left:0}).hide().data("menu");
+                              d.fn.bgiframe&&this.menu.element.bgiframe()},destroy:function(){this.element.removeClass("ui-autocomplete-input").removeAttr("autocomplete").removeAttr("role").removeAttr("aria-autocomplete").removeAttr("aria-haspopup");this.menu.element.remove();d.Widget.prototype.destroy.call(this)},_setOption:function(a,b){d.Widget.prototype._setOption.apply(this,arguments);a==="source"&&this._initSource();if(a==="appendTo")this.menu.element.appendTo(d(b||"body",this.element[0].ownerDocument)[0]);a==="disabled"&&
+                              b&&this.xhr&&this.xhr.abort()},_initSource:function(){var a=this,b,g;if(d.isArray(this.options.source)){b=this.options.source;this.source=function(c,f){f(d.ui.autocomplete.filter(b,c.term))}}else if(typeof this.options.source==="string"){g=this.options.source;this.source=function(c,f){a.xhr&&a.xhr.abort();a.xhr=d.ajax({url:g,data:c,dataType:"json",autocompleteRequest:++e,success:function(h){this.autocompleteRequest===e&&f(h)},error:function(){this.autocompleteRequest===e&&f([])}})}}else this.source=
+                              this.options.source},search:function(a,b){a=a!=null?a:this.element.val();this.term=this.element.val();if(a.length<this.options.minLength)return this.close(b);clearTimeout(this.closing);if(this._trigger("search",b)!==false)return this._search(a)},_search:function(a){this.pending++;this.element.addClass("ui-autocomplete-loading");this.source({term:a},this.response)},_response:function(a){if(!this.options.disabled&&a&&a.length){a=this._normalize(a);this._suggest(a);this._trigger("open")}else this.close();
+                              this.pending--;this.pending||this.element.removeClass("ui-autocomplete-loading")},close:function(a){clearTimeout(this.closing);if(this.menu.element.is(":visible")){this.menu.element.hide();this.menu.deactivate();this._trigger("close",a)}},_change:function(a){this.previous!==this.element.val()&&this._trigger("change",a,{item:this.selectedItem})},_normalize:function(a){if(a.length&&a[0].label&&a[0].value)return a;return d.map(a,function(b){if(typeof b==="string")return{label:b,value:b};return d.extend({label:b.label||
+                                      b.value,value:b.value||b.label},b)})},_suggest:function(a){var b=this.menu.element.empty().zIndex(this.element.zIndex()+1);this._renderMenu(b,a);this.menu.deactivate();this.menu.refresh();b.show();this._resizeMenu();b.position(d.extend({of:this.element},this.options.position));this.options.autoFocus&&this.menu.next(new d.Event("mouseover"))},_resizeMenu:function(){var a=this.menu.element;a.outerWidth(Math.max(a.width("").outerWidth(),this.element.outerWidth()))},_renderMenu:function(a,b){var g=this;
+                              d.each(b,function(c,f){g._renderItem(a,f)})},_renderItem:function(a,b){return d("<li></li>").data("item.autocomplete",b).append(d("<a></a>").text(b.label)).appendTo(a)},_move:function(a,b){if(this.menu.element.is(":visible"))if(this.menu.first()&&/^previous/.test(a)||this.menu.last()&&/^next/.test(a)){this.element.val(this.term);this.menu.deactivate()}else this.menu[a](b);else this.search(null,b)},widget:function(){return this.menu.element}});d.extend(d.ui.autocomplete,{escapeRegex:function(a){return a.replace(/[-[\]{}()*+?.,\\^$|#\s]/g,
+                                  "\\$&")},filter:function(a,b){var g=new RegExp(d.ui.autocomplete.escapeRegex(b),"i");return d.grep(a,function(c){return g.test(c.label||c.value||c)})}})})(jQuery);
+(function(d){d.widget("ui.menu",{_create:function(){var e=this;this.element.addClass("ui-menu ui-widget ui-widget-content ui-corner-all").attr({role:"listbox","aria-activedescendant":"ui-active-menuitem"}).click(function(a){if(d(a.target).closest(".ui-menu-item a").length){a.preventDefault();e.select(a)}});this.refresh()},refresh:function(){var e=this;this.element.children("li:not(.ui-menu-item):has(a)").addClass("ui-menu-item").attr("role","menuitem").children("a").addClass("ui-corner-all").attr("tabindex",
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      -1).mouseenter(function(a){e.activate(a,d(this).parent())}).mouseleave(function(){e.deactivate()})},activate:function(e,a){this.deactivate();if(this.hasScroll()){var b=a.offset().top-this.element.offset().top,g=this.element.scrollTop(),c=this.element.height();if(b<0)this.element.scrollTop(g+b);else b>=c&&this.element.scrollTop(g+b-c+a.height())}this.active=a.eq(0).children("a").addClass("ui-state-hover").attr("id","ui-active-menuitem").end();this._trigger("focus",e,{item:a})},deactivate:function(){if(this.active){this.active.children("a").removeClass("ui-state-hover").removeAttr("id");
+                      this._trigger("blur");this.active=null}},next:function(e){this.move("next",".ui-menu-item:first",e)},previous:function(e){this.move("prev",".ui-menu-item:last",e)},first:function(){return this.active&&!this.active.prevAll(".ui-menu-item").length},last:function(){return this.active&&!this.active.nextAll(".ui-menu-item").length},move:function(e,a,b){if(this.active){e=this.active[e+"All"](".ui-menu-item").eq(0);e.length?this.activate(b,e):this.activate(b,this.element.children(a))}else this.activate(b,
+                          this.element.children(a))},nextPage:function(e){if(this.hasScroll())if(!this.active||this.last())this.activate(e,this.element.children(".ui-menu-item:first"));else{var a=this.active.offset().top,b=this.element.height(),g=this.element.children(".ui-menu-item").filter(function(){var c=d(this).offset().top-a-b+d(this).height();return c<10&&c>-10});g.length||(g=this.element.children(".ui-menu-item:last"));this.activate(e,g)}else this.activate(e,this.element.children(".ui-menu-item").filter(!this.active||
+                              this.last()?":first":":last"))},previousPage:function(e){if(this.hasScroll())if(!this.active||this.first())this.activate(e,this.element.children(".ui-menu-item:last"));else{var a=this.active.offset().top,b=this.element.height();result=this.element.children(".ui-menu-item").filter(function(){var g=d(this).offset().top-a+b-d(this).height();return g<10&&g>-10});result.length||(result=this.element.children(".ui-menu-item:first"));this.activate(e,result)}else this.activate(e,this.element.children(".ui-menu-item").filter(!this.active||
+                              this.first()?":last":":first"))},hasScroll:function(){return this.element.height()<this.element[d.fn.prop?"prop":"attr"]("scrollHeight")},select:function(e){this._trigger("selected",e,{item:this.active})}})})(jQuery);
+;
+/*
+Documentation: http://baymard.com/labs/country-selector#documentation
+Copyright (C) 2011 by Jamie Appleseed at Baymard Institute (baymard.com)
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+*/
+(function($){
+ var settings = {
+ 'sort': false,
+ 'sort-attr': 'data-priority',
+ 'sort-desc': false,
+ 'alternative-spellings': true,
+ 'alternative-spellings-attr': 'data-alternative-spellings',
+ 'remove-valueless-options': true,
+ 'copy-attributes-to-text-field': true,
+ 'autocomplete-plugin': 'jquery_ui',
+ handle_invalid_input: function( context ) {
+ context.$text_field.val( '' );
+ },
+handle_select_field: function( $select_field ) {
+return $select_field.hide();
+},
+insert_text_field: function( $select_field ) {
+var $text_field = $( "<input></input>" );
+if ( settings['copy-attributes-to-text-field'] ) {
+var attrs = {};
+var raw_attrs = $select_field[0].attributes;
+for (var i=0; i < raw_attrs.length; i++) {
+    var key = raw_attrs[i].nodeName;
+    var value = raw_attrs[i].nodeValue;
+    if ( key !== 'name' && key !== 'id' ) {
+        attrs[key] = raw_attrs[i].nodeValue;
+    }
+};
+return $text_field.attr( attrs )
+    .val( $select_field.find('option:selected:first').text() )
+    .insertAfter( $select_field );
+    }
+},
+extract_options: function( $select_field ) {
+                     var options = [];
+                     var $options = $select_field.find('option');
+                     var number_of_options = $options.length;
+                     var original_number_of_options = number_of_options;
+                     // go over each option in the select tag
+                     $options.each(function(){
+                             var $option = $(this);
+                             var option = {
+                             'real-value': $option.attr('value'),
+                             'label': $option.text()
+                             }
+                             if ( settings['remove-valueless-options'] && option['real-value'] === '') {
+                             // remove options without a value
+                             number_of_options--;
+                             } else {
+                             // prepare the 'matches' string which must be filtered on later
+                             option['matches'] = option['label'];
+                             var alternative_spellings = $option.attr( settings['alternative-spellings-attr'] );
+                             if ( alternative_spellings ) {
+                             option['matches'] += ' ' + alternative_spellings;
+                             }
+                             // give each option a weight paramter for sorting
+                             if ( settings['sort'] ) {
+                             var weight = parseInt( $option.attr( settings['sort-attr'] ), 10 );
+                             if ( weight ) {
+                             option['weight'] = weight;
+                             } else {
+                                 option['weight'] = original_number_of_options;
+                             }
+                             }
+                             // add option to combined array
+                             options.push( option );
+                             }
+                     });
+                     // sort the options based on weight
+                     if ( settings['sort'] ) {
+                         if ( settings['sort-desc'] ) {
+                             options.sort( function( a, b ) { return b['weight'] - a['weight']; } );
+                         } else {
+                             options.sort( function( a, b ) { return a['weight'] - b['weight']; } );
+                         }
+                     }
+                     // return the set of options, each with the following attributes: real-value, label, matches, weight (optional)
+                     return options;
+                 }
+};
+var public_methods = {
+init: function( customizations ) {
+          settings = $.extend( settings, customizations );
+          return this.each(function(){
+                  var $select_field = $(this);
+                  var options = settings['extract_options']( $select_field );
+                  var $text_field = settings['insert_text_field']( $select_field );
+                  settings['handle_select_field']( $select_field );
+                  var context = {
+                  '$select_field': $select_field,
+                  '$text_field': $text_field,
+                  'options': options,
+                  'settings': settings
+                  };
+                  if ( typeof settings['autocomplete-plugin'] === 'string' ) {
+                  adapters[settings['autocomplete-plugin']]( context );
+                  } else {
+                  settings['autocomplete-plugin']( context );
+                  }
+                  });
+      }
+};
+var adapters = {
+jquery_ui: function( context ) {
+               // loose matching of search terms
+               var filter_options = function( term ) {
+                   var split_term = term.split(' ');
+                   var matchers = [];
+                   for (var i=0; i < split_term.length; i++) {
+                       if ( split_term[i].length > 0 ) {
+                           matchers.push( new RegExp( $.ui.autocomplete.escapeRegex( split_term[i] ), "i" ) );
+                       }
+                   };
+                   return $.grep( context.options, function( option ) {
+                           var partial_matches = 0;
+                           for ( var i=0; i < matchers.length; i++ ) {
+                           if ( matchers[i].test( option.matches ) ) {
+                           partial_matches++;
+                           }
+                           };
+                           return (!term || matchers.length === partial_matches );
+                           });
+               }
+               // update the select field value using either selected option or current input in the text field
+               var update_select_value = function( option ) {
+                   if ( option ) {
+                       context.$select_field.val( option['real-value'] );
+                   } else {
+                       var option_name = context.$text_field.val().toLowerCase();
+                       var matching_option = { 'real-value': false };
+                       for (var i=0; i < context.options.length; i++) {
+                           if ( option_name === context.options[i]['label'].toLowerCase() ) {
+                               matching_option = context.options[i];
+                               break;
+                           }
+                       };
+                       context.$select_field.val( matching_option['real-value'] || '' );
+                       if ( matching_option['real-value'] ) {
+                           context.$text_field.val( matching_option['label'] );
+                       }
+                       if ( typeof context.settings['handle_invalid_input'] === 'function' && context.$select_field.val() === '' ) {
+                           context.settings['handle_invalid_input']( context );
+                       }
+                   }
+               }
+               // jQuery UI autocomplete settings & behavior
+               context.$text_field.autocomplete({
+                       'minLength': 0,
+                       'delay': 0,
+                       source: function( request, response ) {
+                       response( filter_options( request.term ) );
+                       },
+select: function( event, ui ) {
+update_select_value( ui.item );
+},
+change: function( event, ui ) {
+update_select_value( ui.item );
+}
+});
+// force refresh value of select field when form is submitted
+context.$text_field.parents('form:first').submit(function(){
+        update_select_value();
+        });
+// select current value
+update_select_value();
+}
+};
+$.fn.selectToAutocomplete = function( method ) {
+    if ( public_methods[method] ) {
+        return public_methods[ method ].apply( this, Array.prototype.slice.call( arguments, 1 ));
+    } else if ( typeof method === 'object' || ! method ) {
+        return public_methods.init.apply( this, arguments );
+    } else {
+        $.error( 'Method ' + method + ' does not exist on jQuery.tooltip' );
+    }
+};
+})(jQuery);
+    </script>
+</html>
