@@ -147,7 +147,7 @@
                 var cd = getClassOf(currentPath);
                 _($.extend({}, cd.references, cd.collections)).each(function(fd) {
                     console.log(fd.name);
-                    $('<li>').text(fd.referencedType + "s")
+                    $('<li>').text(fd.name)
                             .click(function() {currentPath += "." + fd.name; displayTable()})
                             .appendTo($whereNext);
                 });
