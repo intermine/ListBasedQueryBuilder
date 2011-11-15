@@ -1,11 +1,18 @@
 <html>
     <head>
         <script src="underscore-min.js" type="text/javascript"></script>
+        <script src="inflection-js/inflection.js" type="text/javascript"></script>
+
         <script src="http://ajax.googleapis.com/ajax/libs/jquery/1.6.4/jquery.min.js" type="text/javascript"></script>
         <script src="http://www.intermine.org/lib/imbedding/0.2/imbedding.js" type="text/javascript"></script>
+        <script src="http://ajax.googleapis.com/ajax/libs/dojo/1.6.1/dojo/dojo.xd.js" type="text/javascript"></script>
+        <link rel="stylesheet" href="http://ajax.googleapis.com/ajax/libs/dojo/1.6/dijit/themes/nihilo/nihilo.css" media="screen">
 
         <script type="text/javascript">
 
+            dojo.require("dijit.Menu");
+            dojo.require("dijit.form.ComboButton");
+            dojo.require("dijit.Dialog");
             var currentPath = "";
             var constraints = [];
             var logic_ops = [];
@@ -19,10 +26,10 @@
             var CODES = ("ABCDEFGHIJKLMNOPQRSTUVWXYZ").split("");
             var ATTR_OPS = {
                 "=": "is",
-                "<": "sorts before",
-                ">": "sorts after",
-                "<=": "is less than or equal to",
-                ">=": "is greater than or equal to",
+                "<": "is less than",
+                ">": "is greater than",
+                "<=": "is or is less than",
+                ">=": "is or is greater than",
             };
             var NULL_OPS = {
                 "IS NULL": "does not exist",
@@ -30,35 +37,58 @@
             };
             $.extend(ATTR_OPS, NULL_OPS);
 
-            $(function() {
+            dojo.ready(function() {
                 IMBedding.setBaseUrl($BASE_URL);
                 $.getJSON($BASE_URL + "/service/model/json", function(res) {
                     classes = res.model.classes;
                     setUpQuery("Employee");
                     setUpClassMenu();
-                });
-                $.getJSON($BASE_URL + "/service/summaryfields", function(res) {
-                    summaryfields = res.classes;
-                    displayTable();
+                    $('#class-selector').val("Employee");
+                    $.getJSON($BASE_URL + "/service/summaryfields", function(res) {
+                        summaryfields = res.classes;
+                        displayTable();
+                    });
                 });
                 $('#references-box h2').click(function() {$('#where-next').slideToggle();});
+                $('#con-header').click(function() {$('#constraint-list').slideToggle();});
+                $('#page-size').change(displayTable);
+                $('#export').click(showExportOptions);
                 addViewAdder();
-                    
             });
 
-            function setUpClassMenu() {
-                var i;
+            function showExportOptions() {
+                var diag = new dijit.Dialog({title: "Export Results", style: "width: 300px"});
+                var content = document.createElement("form");
+                var upToHere = "";
+                _(currentPath.split(/\./)).each(function(part, idx) {
+                    upToHere += (upToHere) ? "." : "";
+                    upToHere += part;
+                    var cd = getClassOf(upToHere);
+                    $('<h4>').text(upToHere).appendTo(content);
+                    var $fieldList = $('<ul class="view-selector">').appendTo(content);
+                    _(cd.attributes).each(function(a) {
+                        var $label = $('<label>').text(a.name).attr("for", "view-" + upToHere + a.name);
+                        var $chbox = $('<input>').attr("type", "checkbox").attr("id", "view-" + upToHere + a.name).attr("name", "selected-views");
+                        var $li = $('<li>').appendTo($fieldList);
+                        $li.append($chbox).append($label);
+                    });
+                });
 
-                for (i in classes) {
-                    $('#class-selector').append($("<option>").text(classes[i].name).attr("selected", (classes[i].name == "Employee")));
-                }
-                $('#class-selector').selectToAutocomplete({'sort': true});
-                $('form').submit(function() {
-                    var cls = $('#class-selector').val();
-                    if (cls in classes) {
-                        setUpQuery(cls);
+                diag.attr("content", content);
+                diag.show();
+            }
+
+            function setUpClassMenu() {
+                $('#class-selector').autocomplete({
+                    source: _(classes).keys(),
+                    select: function() {
+                        var cls = $('#class-selector').val();
+                        if (cls in classes) {
+                            setUpQuery(cls);
+                            displayTable();
+                        }
+                        return false;
                     }
-                    return false;
                 });
                 $('.selector').slideDown();
             }
@@ -145,28 +175,55 @@
             function showWhereNext() {
                 var $whereNext = $('#where-next').empty();
                 var cd = getClassOf(currentPath);
+                var i = 0;
                 _($.extend({}, cd.references, cd.collections)).each(function(fd) {
-                    console.log(fd.name);
-                    $('<li>').text(fd.name)
+                    i++;
+                    var $li = $('<li>').text(fd.name.pluralize())
+                            .addClass("here-next")
                             .click(function() {currentPath += "." + fd.name; displayTable()})
                             .appendTo($whereNext);
+                    var refCd = getClassOf(fd.referencedType);
+                    var idField = refCd.attributes.id || _(refCd.attributes).chain().values().first().value();
+                    IMBedding.loadQuery({select: [currentPath + "." + fd.name + "." + idField.name], from: "testmodel"}, {format: "jsoncount"}, function(res) {
+                        $li.append(" (" + res.count + ") ");
+                    });
                 });
+                if (i < 1) {
+                    $('#references-box').slideUp();
+                } else {
+                    $('#references-box').slideDown();
+                }
             }
 
-            function addConstraintCreator() {
-                var item = selectedItem;
+            function makeConstraintCreator(path) {return function() {
+                var cd = getClassOf(path);
                 var $conBox = $('<div>');
-                var $pathSpan = $('<span class="con-path">').text(item.name).appendTo($conBox);
-                var $select = $('<select>').appendTo($conBox);
+                var $select;
+                var $pathSpan = $('<input class="con-path">')
+                                    .val(path)
+                                    .appendTo($conBox)
+                                    .autocomplete({
+                                        source: _(cd.attributes).chain().keys().map(function(x) {return path + "." + x}).value().concat([path]),
+                                        select: function() {
+                                            var i;
+                                            $select.empty();
+                                            if ($(this).val() == path) {
+                                                for (i in OBJECT_OPS) {
+                                                    $select.append($('<option>').attr("value", i).text(OBJECT_OPS[i]));
+                                                }
+                                            } else {
+                                                for (i in ATTR_OPS) {
+                                                    $select.append($('<option>').attr("value", i).text(ATTR_OPS[i]));
+                                                }
+                                            }
+                                        }
+                                    });
+                                            
+
+                $select = $('<select>').appendTo($conBox);
                 var i, $button, $valBox, $extraValBox;
-                if ("fields" in item) {
-                    for (i in OBJECT_OPS) {
-                        $select.append($('<option>').attr("value", i).text(OBJECT_OPS[i]));
-                    }
-                } else {
-                    for (i in ATTR_OPS) {
-                        $select.append($('<option>').attr("value", i).text(ATTR_OPS[i]));
-                    }
+                for (i in OBJECT_OPS) {
+                    $select.append($('<option>').attr("value", i).text(OBJECT_OPS[i]));
                 }
                 $select.change(function() {
                     var selectedOp = $select.val();
@@ -186,8 +243,9 @@
 
                 $valBox = $('<input type="text">').appendTo($conBox).change(function() {$button.attr("disabled", !$(this).val())});
                 $extraValBox = $('<input type="text" style="display: none;">').appendTo($conBox);
+                $conBox.append($('<button>').text("cancel").click(function() {$conBox.remove()}));
                 $button = $('<button disabled>').text("Add").click(function() {
-                    var conpath = item.id;
+                    var conpath = $pathSpan.val();
                     var op = $select.val();
                     var value = $valBox.val();
                     var extraValue = $extraValBox.val();
@@ -204,9 +262,8 @@
                     $conBox.remove();
                     displayTable();
                 }).appendTo($conBox);
-                $conBox.append($('<button>').text("cancel").click(function() {$conBox.remove()}));
                 $conBox.appendTo($('#constraints'));
-            }
+            }}
 
             function makeRemovalButton(path) {
                 var $button = $('<button>').text("Remove");
@@ -268,16 +325,42 @@
                 });
             }
 
+            function nodeIsConstrained(node) {
+                var cd = getClassOf(node);
+                return _(constraints).filter(function(x) {return cd === getClassOf(x.path)}).length > 0;
+            }
+
             function showBreadCrumbs() {
                 $('#breadcrumbs').empty();
                 var parts = currentPath.split(/\./);
                 _(parts).each(function(part, idx) {
-                    var $button = $('<button>').text(part);
-                    $button.click(function() {
-                        currentPath = parts.slice(0, idx + 1).join(".");
-                        displayTable();
+                    var contextMenu = new dijit.Menu();
+                    var upToHere = parts.slice(0, idx + 1).join(".");
+                    var button = new dijit.form.ComboButton({
+                        label: part,
+                        class: nodeIsConstrained(upToHere) ? "hasconstraint" : "hasnoconstraint",
+                        onClick: function() {
+                            currentPath = upToHere;
+                            displayTable();
+                        },
+                        dropDown: contextMenu
                     });
-                    $button.appendTo('#breadcrumbs');
+
+                    contextMenu.addChild(new dijit.MenuItem({
+                        label: "constrain",
+                        onClick: makeConstraintCreator(upToHere)
+                    }));
+                    if (nodeIsConstrained(upToHere)) {
+                        contextMenu.addChild(new dijit.MenuItem({
+                            label: "un-constrain",
+                            onClick: function() {
+                                constraints = _(constraints).filter(function(x) {return getClassOf(upToHere) !== getClassOf(x.path)});
+                                displayTable();
+                            }
+                        }));
+                    }
+
+                    $('#breadcrumbs').append(button.domNode);
                 });
             }
 
@@ -312,17 +395,19 @@
                     query.constraintLogic = conLogic;
                 }
                 showCount(query);
-                IMBedding.loadQuery(query, {format: "jsonrows", size: 10}, function(resultSet) {
+                IMBedding.loadQuery(query, {format: "jsonrows", size: $('#page-size').val()}, function(resultSet) {
+                    $('#row-class').text(getClassOf(currentPath).name.pluralize());
+
                     _(resultSet.results).each(function(row) {
                         var $li = $('<li class="result-row">');
                         _(row).each(function(cell, idx) {
                             $li.append(
                                 $("<span>").append(
-                                    $('<a>').text(cell.value).attr("href", $BASE_URL + cell.url).attr("title", resultSet.columnHeaders[idx])
+                                    $('<a>').text(cell.value || " NONE ").attr("href", $BASE_URL + cell.url).attr("title", resultSet.columnHeaders[idx])
                                 )
                             );
                         });
-                        $li.appendTo('#values ul');
+                        $li.appendTo('#row-list');
                     });
                     $('#values').slideDown();
                 });
@@ -341,7 +426,7 @@
                     <form>
                         <h2 class="stamp">Root Class</h2>
                         <label class="label" for="class-selector">Choose:</label>
-                        <select id="class-selector"></select>
+                        <input type="text" id="class-selector"/>
                     </form>
                 </div>
                 <div id="references-box">
@@ -360,8 +445,19 @@
                 -->
                 <div id="values" style="display: none;">
                     <div id="breadcrumbs"></div>
-                    <h2><span id="row-count"></span> Rows. (First 10)</h2>
-                    <ul></ul>
+                    <div id="constraints"></div>
+                    <h2 id="con-header"><span id="con-count">0</span> Constraint<span class="pl-suffix">s</span></h2>
+                    <ul style="display: none;" id="constraint-list"></ul>
+                    <h2><span id="row-count"></span> <span id="row-class"></span>.</h2>
+                    <select id="page-size">
+                        <option value="5">First 5</option>
+                        <option value="10" selected>First 10</option>
+                        <option value="20">First 20</option>
+                        <option value="50">First 50</option>
+                        <option value="">All</option>
+                    </select>
+                    <ul id="row-list"></ul>
+                    <button id="export">export</button>
                 </div>
             </div>
         </div>
@@ -373,6 +469,19 @@
            font-family: Arial,"Lucida Grande",Verdana,Sans-serif; 
         }
 
+        #constraints, #breadcrumbs {
+            width: 80%;
+        }
+
+        .nihilo .dijitmenuitemselected {
+            background-color: #d2e3f3;
+            border: 1px solid #AAA;
+            
+        }
+
+        .nihilo .dijitmenuitemactive, .nihilo .dijitmenuitemhover {
+            background-color: #A9D2F8;
+        }
 
         #constraint-box, #references-box {
             border: 1px solid #ebebeb;
@@ -448,6 +557,11 @@
            width: 80%;
        }
 
+    #breadcrumbs .hasconstraint tr .dijitbuttonnode {
+        border: 1px solid #63A3F1;
+        box-shadow: 2px 2px 3px #aaa;
+    }
+
     .ui-autocomplete {
         background-color: #FFFFFF;
         border: 1px solid #BBBBBB;
@@ -457,7 +571,7 @@
         max-height: 247px;
         overflow-y: scroll;
         padding: 0;
-        width: 218px;
+        width: 400px;
     }
     .ui-autocomplete .ui-menu-item {
         margin: 0;
@@ -515,9 +629,15 @@
             border-top: 1px solid rgba(0, 0, 0, 0.2);
         }
 
-        #constraint-box h2, #references-box h2  {
+        h2#con-header, #references-box h2  {
             font-size: 18px;
+            cursor: pointer;
         }
+
+        h2#con-header {
+            color: #999;
+        }
+
         #constraint-box li {
             list-style-type: none;
             font-family: monospace;
@@ -525,10 +645,31 @@
 
         li.result-row {
             border-top: 1px solid #aaa;
-            padding-top: 1em;
-            padding-bottom: 0.8em;
-            list-style-type: none;
+            padding-top: 0.5em;
+            padding-bottom: 0.4em;
+            margin: 0;
+            margin-right: 15%;
+            list-style-type: decimal;
         }
+
+        .result-row span {
+            line-height: 1.9em;
+        }
+
+        .result-row span a {
+            text-decoration: none;
+        }
+
+        #page-size {
+            float: right;
+        }
+
+        li.here-next {
+            list-style-type: none;
+            font-weight: bold;
+            cursor: pointer;
+        }
+
 
         #constraint-box li button {
             margin-left: 0.5em;
@@ -551,6 +692,10 @@
             position: relative;
             z-index: 1;
         }
+
+        .view-selector li {
+            list-style-type: none;
+        }
     
         body {
             padding: 0;
@@ -560,6 +705,7 @@
         #content {
             position: relative;
             padding: 1em;
+            margin-bottom: 4em;
         }
 
         #container {
