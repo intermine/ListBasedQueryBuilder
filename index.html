@@ -57,19 +57,20 @@
             });
 
             function showExportOptions() {
-                var diag = new dijit.Dialog({title: "Export Results", style: "width: 300px"});
+                var diag = new dijit.Dialog({title: "Export Results", style: "width: 600px;"});
                 var content = document.createElement("form");
+                $(content).addClass("dialog-form");
                 var upToHere = "";
                 _(currentPath.split(/\./)).each(function(part, idx) {
                     upToHere += (upToHere) ? "." : "";
                     upToHere += part;
                     var cd = getClassOf(upToHere);
-                    $('<h4>').text(upToHere).appendTo(content);
-                    var $fieldList = $('<ul class="view-selector">').appendTo(content);
+                    $('<span class="clear dijitdialogtitle">').text(upToHere).appendTo(content);
+                    var $fieldList = $('<div class="view-selection">').appendTo(content);
                     _(cd.attributes).each(function(a) {
                         var $label = $('<label>').text(a.name).attr("for", "view-" + upToHere + a.name);
                         var $chbox = $('<input>').attr("type", "checkbox").attr("id", "view-" + upToHere + a.name).attr("name", "selected-views");
-                        var $li = $('<li>').appendTo($fieldList);
+                        var $li = $('<div class="view-option">').appendTo($fieldList);
                         $li.append($chbox).append($label);
                     });
                 });
@@ -693,8 +694,27 @@
             z-index: 1;
         }
 
-        .view-selector li {
-            list-style-type: none;
+        .view-selection {
+        }
+
+        .view-option {
+            width: 140px;
+            float: left;
+        }
+
+        .dialog-form {
+            padding-bottom: 1em;
+        }
+
+        .clear {
+            clear: both;
+            display: block;
+        }
+
+        h4.view-selection {
+            margin-top: 0;
+            padding-top: 0.8em;
+            margin-bottom: 0.1em;
         }
     
         body {
